@@ -1,4 +1,4 @@
-import { kv } from "@vercel/kv";
+import { put, head, del } from "@vercel/blob";
 import { NextResponse } from "next/server";
 
 export interface Paste {
@@ -8,13 +8,38 @@ export interface Paste {
   label?: string;
 }
 
-const PASTES_KEY = "openclaw:pastes";
+const BLOB_PATH = "pastes.json";
 const MAX_PASTES = 50;
+
+async function readPastes(): Promise<Paste[]> {
+  try {
+    const blob = await head(BLOB_PATH);
+    const res = await fetch(blob.url);
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+async function writePastes(pastes: Paste[]) {
+  // Delete old blob first if it exists
+  try {
+    const blob = await head(BLOB_PATH);
+    await del(blob.url);
+  } catch {
+    // doesn't exist yet, that's fine
+  }
+
+  await put(BLOB_PATH, JSON.stringify(pastes), {
+    access: "public",
+    addRandomSuffix: false,
+  });
+}
 
 export async function GET() {
   try {
-    const pastes = await kv.lrange<Paste>(PASTES_KEY, 0, MAX_PASTES - 1);
-    return NextResponse.json(pastes ?? []);
+    const pastes = await readPastes();
+    return NextResponse.json(pastes);
   } catch {
     return NextResponse.json([], { status: 200 });
   }
@@ -35,8 +60,9 @@ export async function POST(req: Request) {
       createdAt: Date.now(),
     };
 
-    await kv.lpush(PASTES_KEY, paste);
-    await kv.ltrim(PASTES_KEY, 0, MAX_PASTES - 1);
+    const pastes = await readPastes();
+    pastes.unshift(paste);
+    await writePastes(pastes.slice(0, MAX_PASTES));
 
     return NextResponse.json(paste, { status: 201 });
   } catch (err) {
@@ -52,13 +78,9 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: "ID required" }, { status: 400 });
     }
 
-    const pastes = await kv.lrange<Paste>(PASTES_KEY, 0, -1);
-    const filtered = (pastes ?? []).filter((p) => p.id !== id);
-
-    await kv.del(PASTES_KEY);
-    if (filtered.length > 0) {
-      await kv.rpush(PASTES_KEY, ...filtered);
-    }
+    const pastes = await readPastes();
+    const filtered = pastes.filter((p) => p.id !== id);
+    await writePastes(filtered);
 
     return NextResponse.json({ ok: true });
   } catch (err) {
